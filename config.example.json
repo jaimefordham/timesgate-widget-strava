@@ -1,0 +1,14 @@
+{
+  "strava_client_id": "12345",
+  "strava_client_secret": "your-client-secret",
+  "device_ip": "192.168.1.50",
+  "device_endpoint": "/post",
+  "device_port": 80,
+  "local_token": null,
+  "screen": 2,
+  "units": "metric",
+  "logo_path": "strava_logo.png",
+  "bike_icon_path": "",
+  "font_path": "",
+  "jpeg_quality": 90
+}
