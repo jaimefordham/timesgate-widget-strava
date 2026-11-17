@@ -69,9 +69,9 @@ DEFAULTS = {
     "strava_client_id": "",
     "strava_client_secret": "",
     "device_ip": "192.168.1.50",
-    "device_endpoint": "/post",       # "/divoom_api" on some HW revisions
-    "device_port": 80,                # 9000 on some HW revisions
-    "local_token": None,              # integer from Divoom app, if required
+    "device_endpoint": "/divoom_api",  # "/post" on legacy firmware
+    "device_port": 9000,              # 80 on legacy firmware; 9000 on new firmware
+    "local_token": None,              # integer from Divoom app; required for port 9000
     "screen": 0,                      # 0-4, left to right
     "units": "metric",                # "metric" or "imperial"
     "logo_path": "strava_logo.png",   # official Strava brand asset (optional)
@@ -339,9 +339,8 @@ def render(stats: dict, cfg: dict, mode: str) -> Image.Image:
     big = load_font(cfg, 17)
     small = load_font(cfg, 9)
     y = hdr_h + 6
-    for i, (value, unit) in enumerate(display_rows(stats, cfg)):
-        colour = STRAVA_ORANGE if i == 0 else (255, 255, 255)
-        d.text((5, y + 16), value, font=big, fill=colour, anchor="ls")
+    for value, unit in display_rows(stats, cfg):
+        d.text((5, y + 16), value, font=big, fill=(255, 255, 255), anchor="ls")
         x = 5 + d.textlength(value, font=big) + 3
         d.text((x, y + 16), unit, font=small, fill=(150, 150, 150), anchor="ls")
         y += 22
@@ -361,9 +360,25 @@ def device_url(cfg: dict) -> str:
 
 
 def build_payload(img: Image.Image, cfg: dict, screen: int) -> dict:
-    """Build the Draw/SendHttpGif payload for one screen."""
+    """Build the Draw/SendHttpGif payload for one screen.
+    
+    Port 9000 (new firmware) requires localToken and has stricter validation.
+    Port 80 (legacy firmware) can optionally include localToken.
+    """
     if not 0 <= screen <= 4:
         raise ValueError("screen must be 0-4")
+    
+    port = int(cfg["device_port"])
+    local_token = cfg.get("local_token")
+    
+    # Port 9000 requires localToken
+    if port == 9000 and local_token is None:
+        raise ValueError(
+            "Port 9000 (new firmware) requires 'local_token' in config.json. "
+            "Get this 32-bit integer from your Divoom app → device settings → "
+            "Local Token. Update config.json and retry."
+        )
+    
     buf = io.BytesIO()
     img.convert("RGB").save(buf, format="JPEG", quality=int(cfg["jpeg_quality"]))
     lcd_array = [0] * 5
@@ -375,22 +390,50 @@ def build_payload(img: Image.Image, cfg: dict, screen: int) -> dict:
         "PicNum": 1,
         "PicWidth": SIZE,
         "PicOffset": 0,
-        "PicID": int(time.time()),     # must be unique; device caches by ID
+        "PicID": int(time.time()),
         "PicSpeed": 1000,
         "PicData": base64.b64encode(buf.getvalue()).decode("ascii"),
     }
-    if cfg.get("local_token") is not None:
-        payload["LocalToken"] = int(cfg["local_token"])
+    if local_token is not None:
+        payload["LocalToken"] = int(local_token)
     return payload
 
 
 def push_to_times_gate(payload: dict, cfg: dict) -> dict:
-    r = requests.post(device_url(cfg), json=payload, timeout=10)
-    r.raise_for_status()
+    """POST to the device; raise TimeoutError if acknowledgement times out."""
+    url = device_url(cfg)
+    try:
+        r = requests.post(url, json=payload, timeout=10)
+        r.raise_for_status()
+    except requests.exceptions.ConnectionError as e:
+        raise RuntimeError(
+            f"Could not connect to {url}. Check device_ip and device_port in config.json. "
+            f"Port 9000 is for new firmware; port 80 for legacy. Error: {e}"
+        )
+    
     result = r.json()
-    if result.get("error_code") not in (0, None):
-        raise RuntimeError(f"Times Gate error: {result}")
-    return result
+    
+    success_codes = [result.get("error_code"), result.get("ReturnCode")]
+    if all(code is None for code in success_codes):
+        raise RuntimeError(
+            f"Times Gate response missing success code. Response: {result}"
+        )
+    if (
+        result.get("ReturnCode") == 1
+        and result.get("ReturnMessage") == "command timeout"
+        and result.get("error_code") in (None, 0)
+    ):
+        raise TimeoutError(
+            "Times Gate reported 'command timeout'. The display may have updated, "
+            "but completion was not confirmed. Check the screen; no retry was made."
+        )
+    if all(code == 0 for code in success_codes if code is not None):
+        return result
+    
+    raise RuntimeError(
+        f"Times Gate command failed. error_code={result.get('error_code')}, "
+        f"ReturnCode={result.get('ReturnCode')}. Full response: {result}"
+    )
 
 
 # --------------------------------------------------------------------------
@@ -475,7 +518,11 @@ def main() -> None:
         return
 
     if not (args.no_push or args.preview):
-        push_to_times_gate(payload, cfg)
+        try:
+            push_to_times_gate(payload, cfg)
+        except TimeoutError as exc:
+            print(f"Warning: {exc}", file=sys.stderr)
+            return
         print(f"Sent to Times Gate screen {screen}: {stats['count']} rides, "
               f"{stats['distance'] / 1000:.0f} km")
 

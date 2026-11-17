@@ -37,8 +37,8 @@ cp config.example.json config.json
 |---|---|
 | `strava_client_id` / `strava_client_secret` | From step 2 |
 | `device_ip` | Times Gate IP address (set a DHCP reservation for it) |
-| `device_endpoint` / `device_port` | `/post` on port `80` for most units. Some hardware revisions use `/divoom_api` on `9000` |
-| `local_token` | Integer from the Divoom app. Only needed if the device returns `DeviceToken is err`. Otherwise leave `null` |
+| `device_endpoint` / `device_port` | Defaults to `/divoom_api` on port `9000` for new firmware. For legacy firmware, set `/post` and port `80` explicitly |
+| `local_token` | Integer from the Divoom app. Required on port `9000`; legacy firmware can use `null` unless authentication is required |
 | `screen` | Screen to draw on, `0`-`4` (left to right). Can be overridden with `--screen` |
 | `units` | `metric` or `imperial` |
 | `logo_path` | PNG of the Strava logo (see below). If missing, an orange "STRAVA" wordmark is used |
@@ -132,7 +132,7 @@ On macOS, `launchd` is more reliable than cron if the Mac sleeps.
 1. **Token**: refreshes the access token via `POST /oauth/token` when it's within 5 minutes of expiry.
 2. **Stats**: `GET /api/v3/athletes/{id}/stats` and reads either `ytd_ride_totals` or `all_ride_totals` (`count`, `distance` m, `moving_time` s, `elevation_gain` m), depending on `--mode`.
 3. **Render**: Pillow draws a 128x128 image.
-4. **Push**: encodes it as a JPEG, base64s it and sends `Draw/SendHttpGif` to `http://<ip>/post` with `LcdArray` set to the chosen screen (for example `[0,0,1,0,0]` for screen 2). `PicID` is a Unix timestamp because the device caches frames by ID.
+4. **Push**: encodes it as a JPEG, base64s it and sends `Draw/SendHttpGif` to the configured endpoint (default `http://<ip>:9000/divoom_api`) with `LcdArray` set to the chosen screen (for example `[0,0,1,0,0]` for screen 2). `PicID` is a Unix timestamp because the device caches frames by ID. Command support on the new firmware still needs device verification.
 
 ## Notes and gotchas
 
@@ -140,5 +140,6 @@ On macOS, `launchd` is more reliable than cron if the Mac sleeps.
 - **Ride types**: `ytd_ride_totals` and `all_ride_totals` are Strava's own roll-ups. To filter by type, page through `/athlete/activities` and sum the rides yourself.
 - **Garbled screen**: the Times Gate needs a **128x128 JPEG**. Pixoo-style raw RGB or 64x64 payloads are accepted (`error_code: 0`) but display garbage.
 - **Nothing changes on screen**: run with `--debug` to confirm the URL and screen, check the screen isn't on a different channel in the Divoom app, and try `Draw/ResetHttpGifId` if other tools have used large PicIDs.
+- **Firmware `command timeout`**: the display can update even when the device returns `ReturnCode: 1` with `ReturnMessage: "command timeout"`. The script prints a warning to stderr and exits normally without retrying or claiming confirmed success. Check the screen manually. Other device errors still fail.
 - **Internet outage**: the local API depends on the device's cloud connection, so pushes may fail until that comes back.
 - **Security**: keep `config.json` and `strava_tokens.json` out of Git (`.gitignore` is included).
